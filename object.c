@@ -179,7 +179,58 @@ int object_write(ObjectType type, const void *data, size_t len, ObjectID *id_out
 // The caller is responsible for calling free(*data_out).
 // Returns 0 on success, -1 on error (file not found, corrupt, etc.).
 int object_read(const ObjectID *id, ObjectType *type_out, void **data_out, size_t *len_out) {
-    // TODO: Implement
-    (void)id; (void)type_out; (void)data_out; (void)len_out;
-    return -1;
+    char path[512];
+    object_path(id, path, sizeof(path));
+
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    rewind(f);
+
+    if (size <= 0) { fclose(f); return -1; }
+
+    unsigned char *buf = malloc(size);
+    if (!buf) { fclose(f); return -1; }
+
+    if (fread(buf, 1, size, f) != (size_t)size) {
+        fclose(f);
+        free(buf);
+        return -1;
+    }
+    fclose(f);
+
+    ObjectID check;
+    compute_hash(buf, size, &check);
+    if (memcmp(check.hash, id->hash, HASH_SIZE) != 0) {
+        free(buf);
+        return -1;
+    }
+
+    void *null_pos = memchr(buf, '\0', size);
+    if (!null_pos) { free(buf); return -1; }
+
+    size_t header_len = (unsigned char*)null_pos - buf;
+    char type_str[16];
+    size_t data_len;
+
+    if (sscanf((char*)buf, "%15s %zu", type_str, &data_len) != 2) {
+        free(buf);
+        return -1;
+    }
+
+    if (strcmp(type_str, "blob") == 0) *type_out = OBJ_BLOB;
+    else if (strcmp(type_str, "tree") == 0) *type_out = OBJ_TREE;
+    else if (strcmp(type_str, "commit") == 0) *type_out = OBJ_COMMIT;
+    else { free(buf); return -1; }
+
+    *data_out = malloc(data_len);
+    if (!*data_out) { free(buf); return -1; }
+
+    memcpy(*data_out, buf + header_len + 1, data_len);
+    *len_out = data_len;
+
+    free(buf);
+    return 0;
 }
